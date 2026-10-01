@@ -7,7 +7,9 @@ import {
   closeRequest,
   createRequest,
   extendRequest,
+  ingestReceipt,
   recordExport,
+  reportSystemChange,
   resolveConflict,
   saveRequest,
   taskAction,
@@ -23,7 +25,9 @@ import {
   evidenceInputSchema,
   extendRequestInputSchema,
   identityInputSchema,
+  ingestReceiptInputSchema,
   recordExportInputSchema,
+  reportSystemChangeInputSchema,
   resolveConflictInputSchema,
   saveRequestInputSchema,
   taskActionInputSchema,
@@ -165,6 +169,34 @@ export const appRouter = t.router({
       .mutation(({ input }) =>
         execute(() =>
           recordExport(input.state, input.scope, input.count, input.operator),
+        ),
+      ),
+    ingestReceipt: publicProcedure
+      .input(ingestReceiptInputSchema)
+      .mutation(({ input }) =>
+        execute(() =>
+          ingestReceipt(
+            input.state,
+            input.requestId,
+            {
+              systemId: input.systemId,
+              requestVersion: input.requestVersion,
+              processedAt: input.processedAt,
+              dedupKey: input.dedupKey,
+              isFinal: input.isFinal,
+              outcome: input.outcome,
+              resultDetail: input.resultDetail,
+              evidenceDigest: input.evidenceDigest,
+            },
+            input.operator,
+          ),
+        ),
+      ),
+    reportSystemChange: publicProcedure
+      .input(reportSystemChangeInputSchema)
+      .mutation(({ input }) =>
+        execute(() =>
+          reportSystemChange(input.state, input.systemId, input.reason, input.operator),
         ),
       ),
   }),

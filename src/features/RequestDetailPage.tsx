@@ -38,7 +38,7 @@ import {
   useDisclosure,
   useToast,
 } from '@chakra-ui/react'
-import { ArrowLeft, FileCheck2, Link2Off, ShieldAlert } from 'lucide-react'
+import { ArrowLeft, FileCheck2, Inbox, Link2Off, ShieldAlert } from 'lucide-react'
 import { PageHeader } from '@/components/PageHeader'
 import { StatusBadge, TypeBadge } from '@/components/StatusBadge'
 import {
@@ -48,6 +48,7 @@ import {
   useAssignTaskMutation,
   useCloseRequestMutation,
   useExtendRequestMutation,
+  useIngestReceiptMutation,
   useResolveConflictMutation,
   useSaveRequestMutation,
   useTaskActionMutation,
@@ -55,13 +56,17 @@ import {
   useWorkspaceQuery,
 } from '@/lib/hooks'
 import {
+  receiptOutcomeLabels,
+  receiptStatusLabels,
   regionLabels,
   requestTypeLabels,
   type Region,
   type RequestType,
+  type SystemReceipt,
   type WorkflowStep,
 } from '@/lib/schemas'
 import { deadlineState } from '@/services/workflow'
+import { acceptedFinalReceipt, missingFinalSystems } from '@/services/receipts'
 
 type DialogType =
   | 'edit'
@@ -73,6 +78,7 @@ type DialogType =
   | 'resolve'
   | 'extend'
   | 'close'
+  | 'receipt'
   | null
 
 export function RequestDetailPage({ requestId }: { requestId: string }) {
@@ -90,6 +96,17 @@ export function RequestDetailPage({ requestId }: { requestId: string }) {
     'execution-log' | 'screenshot' | 'signed-record' | 'system-response'
   >('execution-log')
   const [extendDays, setExtendDays] = useState(15)
+  const [receiptForm, setReceiptForm] = useState({
+    systemId: '',
+    requestVersion: 1,
+    processedAt: '',
+    dedupKey: '',
+    isFinal: true,
+    outcome: 'success' as SystemReceipt['outcome'],
+    resultDetail: '',
+    evidenceDigest: '',
+    simulate: 'fresh' as 'fresh' | 'duplicate' | 'stale' | 'failure' | 'conflict',
+  })
   const [editForm, setEditForm] = useState({
     requesterName: '',
     requesterContact: '',
@@ -108,6 +125,7 @@ export function RequestDetailPage({ requestId }: { requestId: string }) {
   const extendRequest = useExtendRequestMutation()
   const closeRequest = useCloseRequestMutation()
   const addComment = useAddCommentMutation()
+  const ingestReceipt = useIngestReceiptMutation()
 
   const comments = useMemo(
     () => data?.comments.filter((comment) => comment.requestId === requestId) ?? [],
@@ -121,6 +139,103 @@ export function RequestDetailPage({ requestId }: { requestId: string }) {
   const completedTasks = request.tasks.filter((task) => task.status === 'completed').length
   const currentTask = request.tasks.find((task) => task.status === 'active')
   const systems = data.systems.filter((system) => request.affectedSystemIds.includes(system.id))
+  const missingSystems = missingFinalSystems(request)
+  const confirmedCount = request.affectedSystemIds.length - missingSystems.length
+  const currentReceipts = request.receipts
+    .filter((receipt) => receipt.requestVersion === request.version)
+    .sort((left, right) => right.processedAt.localeCompare(left.processedAt))
+  const voidedReceipts = request.receipts.filter(
+    (receipt) =>
+      receipt.status === 'superseded' || receipt.requestVersion !== request.version,
+  )
+
+  function openReceiptDialog(systemId?: string) {
+    if (!request) return
+    setReceiptForm({
+      systemId: systemId ?? request.affectedSystemIds[0] ?? '',
+      requestVersion: request.version,
+      processedAt: new Date().toISOString().slice(0, 16),
+      dedupKey: '',
+      isFinal: true,
+      outcome: 'success',
+      resultDetail: '',
+      evidenceDigest: '',
+      simulate: 'fresh',
+    })
+    setSelectedTask(undefined)
+    setDialog('receipt')
+    setContent('')
+    onOpen()
+  }
+
+  function applyReceiptScenario(systemId: string, scenario: typeof receiptForm.simulate) {
+    if (!request) return
+    const existing = request.receipts.find(
+      (receipt) =>
+        receipt.systemId === systemId &&
+        receipt.requestVersion === request.version &&
+        receipt.status !== 'superseded',
+    )
+    const base = {
+      systemId,
+      processedAt: new Date().toISOString().slice(0, 16),
+      resultDetail: '',
+      evidenceDigest: '',
+    }
+    if (scenario === 'duplicate' && existing) {
+      setReceiptForm((form) => ({
+        ...form,
+        ...base,
+        requestVersion: request.version,
+        dedupKey: existing.dedupKey,
+        isFinal: existing.isFinal,
+        outcome: existing.outcome,
+        resultDetail: existing.resultDetail,
+        evidenceDigest: existing.evidenceDigest,
+      }))
+    } else if (scenario === 'stale') {
+      setReceiptForm((form) => ({
+        ...form,
+        ...base,
+        requestVersion: Math.max(1, request.version - 1),
+        dedupKey: `STALE-${Date.now().toString(36).toUpperCase()}`,
+        isFinal: true,
+        outcome: 'success',
+        resultDetail: '旧结论迟到回执（演示：应被忽略，不回滚）。',
+      }))
+    } else if (scenario === 'failure') {
+      setReceiptForm((form) => ({
+        ...form,
+        ...base,
+        requestVersion: request.version,
+        dedupKey: `FAIL-${Date.now().toString(36).toUpperCase()}`,
+        isFinal: true,
+        outcome: 'failure',
+        resultDetail: '系统执行失败，需要人工回到复核队列处理。',
+      }))
+    } else if (scenario === 'conflict') {
+      setReceiptForm((form) => ({
+        ...form,
+        ...base,
+        requestVersion: request.version,
+        dedupKey: `CONF-${Date.now().toString(36).toUpperCase()}`,
+        isFinal: true,
+        outcome: 'conflict',
+        resultDetail: '系统返回结果与其他系统不一致。',
+      }))
+    } else {
+      setReceiptForm((form) => ({
+        ...form,
+        ...base,
+        requestVersion: request.version,
+        dedupKey: `ACK-${Date.now().toString(36).toUpperCase()}`,
+        isFinal: true,
+        outcome: 'success',
+        resultDetail: '系统已按当前版本完成处理。',
+        evidenceDigest: `RC-${crypto.randomUUID().slice(0, 8).toUpperCase()}`,
+      }))
+    }
+  }
 
   function openDialog(type: DialogType, task?: WorkflowStep, index = 0) {
     if (!request) return
@@ -256,6 +371,26 @@ export function RequestDetailPage({ requestId }: { requestId: string }) {
           }),
         '请求已完成并关闭',
       )
+    } else if (dialog === 'receipt') {
+      const processedAt = receiptForm.processedAt
+        ? new Date(receiptForm.processedAt).toISOString()
+        : new Date().toISOString()
+      await run(
+        () =>
+          ingestReceipt.mutateAsync({
+            requestId,
+            systemId: receiptForm.systemId,
+            requestVersion: receiptForm.requestVersion,
+            processedAt,
+            dedupKey: receiptForm.dedupKey.trim(),
+            isFinal: receiptForm.isFinal,
+            outcome: receiptForm.outcome,
+            resultDetail: receiptForm.resultDetail.trim(),
+            evidenceDigest: receiptForm.evidenceDigest.trim(),
+            operator: '跨系统回执接口',
+          }),
+        '跨系统回执已接入',
+      )
     }
   }
 
@@ -288,13 +423,21 @@ export function RequestDetailPage({ requestId }: { requestId: string }) {
     resolve: '记录冲突复核结论',
     extend: '延期处理请求',
     close: '关闭请求并合并结果',
+    receipt: '接入跨系统回执',
   }
 
   return (
     <Box>
       <PageHeader
-        title={`${request.code} · ${request.requesterName}`}
-        description="身份核验、跨系统任务、证据、冲突复核、期限控制和结果合并均在当前工作区完成。"
+        title={
+          <>
+            {request.code} · {request.requesterName}{' '}
+            <Badge colorScheme="purple" fontSize="0.8em" verticalAlign="middle">
+              当前版本 v{request.version}
+            </Badge>
+          </>
+        }
+        description="身份核验、跨系统任务与回执、证据、冲突复核、期限控制和结果合并均在当前工作区完成。详情、审计与导出包按同一版本展示。"
         actions={
           <>
             <NextLink href="/requests">
@@ -312,7 +455,7 @@ export function RequestDetailPage({ requestId }: { requestId: string }) {
         }
       />
 
-      <SimpleGrid columns={4} spacing="4" mb="5">
+      <SimpleGrid columns={5} spacing="4" mb="5">
         <Box className="metric">
           <Text color="gray.600" fontSize="sm">
             当前状态
@@ -321,7 +464,7 @@ export function RequestDetailPage({ requestId }: { requestId: string }) {
             <StatusBadge status={request.status} />
           </Box>
           <Text mt="2" color="gray.500" fontSize="xs">
-            第 {request.extendedDays ? `延期 ${request.extendedDays} 天` : '原期限'}
+            版本 v{request.version} · {request.extendedDays ? `延期 ${request.extendedDays} 天` : '原期限'}
           </Text>
         </Box>
         <Box className="metric warning">
@@ -349,6 +492,21 @@ export function RequestDetailPage({ requestId }: { requestId: string }) {
             colorScheme="brand"
           />
         </Box>
+        <Box className={`metric ${missingSystems.length ? 'warning' : 'success'}`}>
+          <Text color="gray.600" fontSize="sm">
+            当前版本最终回执
+          </Text>
+          <Heading mt="2" size="md">
+            {confirmedCount} / {request.affectedSystemIds.length}
+          </Heading>
+          <Progress
+            mt="2"
+            size="sm"
+            max={request.affectedSystemIds.length || 1}
+            value={confirmedCount}
+            colorScheme={missingSystems.length ? 'orange' : 'green'}
+          />
+        </Box>
         <Box className={`metric ${request.conflicts.length ? 'danger' : ''}`}>
           <Text color="gray.600" fontSize="sm">
             冲突与例外
@@ -361,6 +519,15 @@ export function RequestDetailPage({ requestId }: { requestId: string }) {
           </Text>
         </Box>
       </SimpleGrid>
+
+      {missingSystems.length && request.status !== 'rejected' ? (
+        <Alert status="warning" mb="4" borderRadius="5px">
+          仍有 {missingSystems.length} 个系统未回传当前版本 v{request.version} 的最终成功回执
+          （{missingSystems
+            .map((id) => data.systems.find((system) => system.id === id)?.name ?? id)
+            .join('、')}），全部齐备前不能关闭请求。
+        </Alert>
+      ) : null}
 
       {request.conflicts.length ? (
         <Alert status="error" mb="4" borderRadius="5px">
@@ -469,6 +636,99 @@ export function RequestDetailPage({ requestId }: { requestId: string }) {
           </Alert>
         </Box>
       </div>
+
+      <Box className="panel" mb="4">
+        <Flex className="panel-title">
+          <HStack>
+            <Inbox size={18} color="#237b78" />
+            <Heading size="sm">跨系统回执 · 版本 v{request.version}</Heading>
+          </HStack>
+          <HStack>
+            <Badge colorScheme={missingSystems.length ? 'orange' : 'green'}>
+              {confirmedCount}/{request.affectedSystemIds.length} 系统已确认
+            </Badge>
+            <Button size="xs" colorScheme="brand" onClick={() => openReceiptDialog()}>
+              接入回执
+            </Button>
+          </HStack>
+        </Flex>
+        <Alert status="info" mb="3" borderRadius="5px">
+          每份回执必须携带请求版本与系统处理时刻；重复回执（同系统+同版本+同幂等键）只保留一条；旧版本迟到回执留痕作废，不回滚已复核结论；失败或冲突自动回到复核队列，任务和证据保留。
+        </Alert>
+        <VStack align="stretch" spacing="3">
+          {systems.map((system) => {
+            const accepted = acceptedFinalReceipt(request, system.id)
+            const systemReceipts = currentReceipts.filter(
+              (receipt) => receipt.systemId === system.id,
+            )
+            const latest = systemReceipts[0]
+            return (
+              <Box key={system.id} p="3" bg="gray.50" borderRadius="5px">
+                <Flex justify="space-between" align="center" gap="4">
+                  <Box>
+                    <HStack>
+                      <Text fontWeight="600">{system.name}</Text>
+                      {accepted ? (
+                        <Badge colorScheme="green">v{request.version} 最终成功</Badge>
+                      ) : latest?.status === 'failed' ? (
+                        <Badge colorScheme="red">失败待复核</Badge>
+                      ) : latest?.status === 'conflict' ? (
+                        <Badge colorScheme="orange">结果冲突</Badge>
+                      ) : latest?.status === 'processing' ? (
+                        <Badge colorScheme="blue">处理中</Badge>
+                      ) : (
+                        <Badge colorScheme="gray">等待回执</Badge>
+                      )}
+                    </HStack>
+                    <Text mt="1" color="gray.600" fontSize="sm">
+                      {latest ? (
+                        <>
+                          {receiptOutcomeLabels[latest.outcome]}
+                          {latest.isFinal ? '（最终）' : '（非最终）'} · 系统处理时刻{' '}
+                          {new Date(latest.processedAt).toLocaleString('zh-CN')} ·{' '}
+                          {latest.resultDetail}
+                        </>
+                      ) : (
+                        <>尚未收到当前版本最终回执。</>
+                      )}
+                    </Text>
+                    {latest ? (
+                      <Text mt="1" color="gray.500" fontSize="xs" className="mono">
+                        幂等键 {latest.dedupKey}
+                        {latest.evidenceDigest ? ` · 摘要 ${latest.evidenceDigest}` : ''}
+                        {latest.duplicateCount > 0
+                          ? ` · 重复送达 ${latest.duplicateCount + 1} 次已去重`
+                          : ''}
+                      </Text>
+                    ) : null}
+                  </Box>
+                  <Button size="xs" variant="outline" onClick={() => openReceiptDialog(system.id)}>
+                    接入该系统回执
+                  </Button>
+                </Flex>
+              </Box>
+            )
+          })}
+        </VStack>
+        {voidedReceipts.length ? (
+          <>
+            <Divider my="3" />
+            <Heading size="xs" mb="2" color="gray.500">
+              已作废 / 旧版本回执（{voidedReceipts.length} 条，仅留痕）
+            </Heading>
+            <VStack align="stretch" spacing="1">
+              {voidedReceipts.map((receipt) => (
+                <Text key={receipt.id} color="gray.500" fontSize="xs">
+                  {data.systems.find((system) => system.id === receipt.systemId)?.name ??
+                    receipt.systemId}{' '}
+                  v{receipt.requestVersion} · {receiptOutcomeLabels[receipt.outcome]} ·{' '}
+                  {receiptStatusLabels[receipt.status]} · {receipt.voidReason}
+                </Text>
+              ))}
+            </VStack>
+          </>
+        ) : null}
+      </Box>
 
       <div className="three-column">
         <Box className="panel">
@@ -891,6 +1151,144 @@ export function RequestDetailPage({ requestId }: { requestId: string }) {
                   <FormLabel>延期原因</FormLabel>
                   <Textarea value={content} onChange={(event) => setContent(event.target.value)} />
                 </FormControl>
+              </VStack>
+            ) : null}
+
+            {dialog === 'receipt' ? (
+              <VStack align="stretch" spacing="4">
+                <Alert status="info" borderRadius="5px">
+                  模拟跨系统推送：填写系统处理时刻、版本与幂等键。旧版本回执不会改回旧结论；重复回执只累加送达次数。
+                </Alert>
+                <FormControl>
+                  <FormLabel>快捷场景</FormLabel>
+                  <Select
+                    value={receiptForm.simulate}
+                    onChange={(event) => {
+                      const scenario = event.target.value as typeof receiptForm.simulate
+                      setReceiptForm((form) => ({ ...form, simulate: scenario }))
+                      applyReceiptScenario(receiptForm.systemId, scenario)
+                    }}
+                  >
+                    <option value="fresh">新的当前版本成功回执</option>
+                    <option value="duplicate">重复送达（同幂等键，应去重）</option>
+                    <option value="failure">失败回执（回复核队列）</option>
+                    <option value="conflict">结果冲突回执（回复核队列）</option>
+                    <option value="stale">旧版本迟到回执（应作废留痕）</option>
+                  </Select>
+                </FormControl>
+                <Flex gap="4">
+                  <FormControl isRequired>
+                    <FormLabel>来源系统</FormLabel>
+                    <Select
+                      value={receiptForm.systemId}
+                      onChange={(event) => {
+                        const systemId = event.target.value
+                        setReceiptForm((form) => ({ ...form, systemId }))
+                        applyReceiptScenario(systemId, receiptForm.simulate)
+                      }}
+                    >
+                      {systems.map((system) => (
+                        <option key={system.id} value={system.id}>
+                          {system.name}
+                        </option>
+                      ))}
+                    </Select>
+                  </FormControl>
+                  <FormControl isRequired>
+                    <FormLabel>回执请求版本</FormLabel>
+                    <Input
+                      type="number"
+                      min={1}
+                      value={receiptForm.requestVersion}
+                      onChange={(event) =>
+                        setReceiptForm((form) => ({
+                          ...form,
+                          requestVersion: Number(event.target.value),
+                        }))
+                      }
+                    />
+                  </FormControl>
+                </Flex>
+                <Flex gap="4">
+                  <FormControl isRequired>
+                    <FormLabel>系统处理时刻</FormLabel>
+                    <Input
+                      type="datetime-local"
+                      value={receiptForm.processedAt}
+                      onChange={(event) =>
+                        setReceiptForm((form) => ({ ...form, processedAt: event.target.value }))
+                      }
+                    />
+                  </FormControl>
+                  <FormControl isRequired>
+                    <FormLabel>回执幂等键</FormLabel>
+                    <Input
+                      value={receiptForm.dedupKey}
+                      onChange={(event) =>
+                        setReceiptForm((form) => ({ ...form, dedupKey: event.target.value }))
+                      }
+                      placeholder="系统侧唯一回执编号"
+                    />
+                  </FormControl>
+                </Flex>
+                <Flex gap="4">
+                  <FormControl>
+                    <FormLabel>结果</FormLabel>
+                    <Select
+                      value={receiptForm.outcome}
+                      onChange={(event) =>
+                        setReceiptForm((form) => ({
+                          ...form,
+                          outcome: event.target.value as SystemReceipt['outcome'],
+                        }))
+                      }
+                    >
+                      <option value="success">成功</option>
+                      <option value="failure">失败</option>
+                      <option value="conflict">结果冲突</option>
+                    </Select>
+                  </FormControl>
+                  <FormControl>
+                    <FormLabel>是否最终回执</FormLabel>
+                    <Select
+                      value={receiptForm.isFinal ? 'final' : 'processing'}
+                      onChange={(event) =>
+                        setReceiptForm((form) => ({
+                          ...form,
+                          isFinal: event.target.value === 'final',
+                        }))
+                      }
+                    >
+                      <option value="final">最终回执</option>
+                      <option value="processing">处理中（非最终）</option>
+                    </Select>
+                  </FormControl>
+                </Flex>
+                <FormControl isRequired>
+                  <FormLabel>结果说明</FormLabel>
+                  <Textarea
+                    value={receiptForm.resultDetail}
+                    onChange={(event) =>
+                      setReceiptForm((form) => ({ ...form, resultDetail: event.target.value }))
+                    }
+                    placeholder="说明系统处理结果、失败原因或冲突点"
+                  />
+                </FormControl>
+                <FormControl>
+                  <FormLabel>回执证据摘要（成功最终回执将受保护登记）</FormLabel>
+                  <Input
+                    value={receiptForm.evidenceDigest}
+                    onChange={(event) =>
+                      setReceiptForm((form) => ({ ...form, evidenceDigest: event.target.value }))
+                    }
+                    placeholder="例如 RC-1A01-9F"
+                  />
+                </FormControl>
+                {receiptForm.requestVersion !== request.version ? (
+                  <Alert status="warning" borderRadius="5px">
+                    回执版本 v{receiptForm.requestVersion} 与请求当前版本 v{request.version} 不一致，将留痕但不会改变当前结论。
+                  </Alert>
+                ) : null}
               </VStack>
             ) : null}
           </ModalBody>

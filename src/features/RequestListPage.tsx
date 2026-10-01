@@ -187,7 +187,14 @@ export function RequestListPage() {
                 const deadline = deadlineState(request.dueAt)
                 return (
                   <Tr key={request.id}>
-                    <Td className="mono">{request.code}</Td>
+                    <Td className="mono">
+                      {request.code}
+                      {request.version > 1 ? (
+                        <Badge ml="2" colorScheme="purple">
+                          v{request.version}
+                        </Badge>
+                      ) : null}
+                    </Td>
                     <Td>
                       <Text fontWeight="600">{request.requesterName}</Text>
                       <Text color="gray.500" fontSize="xs">
@@ -213,6 +220,16 @@ export function RequestListPage() {
                         ) : null}
                         {request.conflicts.length ? (
                           <Badge colorScheme="red">{request.conflicts.length} 项冲突</Badge>
+                        ) : null}
+                        {!['rejected'].includes(request.status) &&
+                        request.receipts.filter(
+                          (receipt) =>
+                            receipt.requestVersion === request.version &&
+                            receipt.status === 'accepted' &&
+                            receipt.isFinal &&
+                            receipt.outcome === 'success',
+                        ).length < request.affectedSystemIds.length ? (
+                          <Badge colorScheme="orange">回执待确认</Badge>
                         ) : null}
                       </HStack>
                     </Td>

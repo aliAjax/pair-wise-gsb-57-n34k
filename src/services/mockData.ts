@@ -1,4 +1,4 @@
-import type { DataSystem, PrivacyRequest, WorkspaceState } from '@/types/domain'
+import type { DataSystem, PrivacyRequest, SystemReceipt, WorkspaceState } from '@/types/domain'
 import { addDays, buildWorkflowSteps } from './workflow'
 
 const systems: DataSystem[] = [
@@ -74,6 +74,10 @@ function audit(
   return { id, action, operator, detail, createdAt }
 }
 
+function receipt(input: Omit<SystemReceipt, 'duplicateCount'> & { duplicateCount?: number }): SystemReceipt {
+  return { duplicateCount: 0, ...input }
+}
+
 export function createInitialState(): WorkspaceState {
   const request1At = '2026-09-25T02:30:00.000Z'
   const request2At = '2026-09-18T06:20:00.000Z'
@@ -90,6 +94,7 @@ export function createInitialState(): WorkspaceState {
     {
       id: 'req-001',
       code: 'DSR-2026-001',
+      version: 1,
       requesterName: '张晨',
       requesterContact: 'zh***@example.com',
       region: 'cn',
@@ -128,6 +133,36 @@ export function createInitialState(): WorkspaceState {
           protected: true,
         },
       ],
+      receipts: [
+        receipt({
+          id: 'receipt-001-crm',
+          systemId: 'sys-crm',
+          requestVersion: 1,
+          processedAt: '2026-09-28T03:10:00.000Z',
+          receivedAt: '2026-09-28T03:12:00.000Z',
+          dedupKey: 'CRM-ACK-7721',
+          isFinal: true,
+          outcome: 'success',
+          resultDetail: '客户身份与服务记录访问包已生成。',
+          evidenceDigest: 'RC-1A01-9F',
+          status: 'accepted',
+          duplicateCount: 1,
+          lastDeliveredAt: '2026-09-28T09:40:00.000Z',
+        }),
+        receipt({
+          id: 'receipt-001-order-processing',
+          systemId: 'sys-order',
+          requestVersion: 1,
+          processedAt: '2026-09-29T01:20:00.000Z',
+          receivedAt: '2026-09-29T01:25:00.000Z',
+          dedupKey: 'ORD-PROCESS-3310',
+          isFinal: false,
+          outcome: 'success',
+          resultDetail: '订单平台正在汇总脱敏交易记录。',
+          evidenceDigest: '',
+          status: 'processing',
+        }),
+      ],
       conflicts: [],
       resultSummary: '',
       closureReason: '',
@@ -144,6 +179,7 @@ export function createInitialState(): WorkspaceState {
     {
       id: 'req-002',
       code: 'DSR-2026-002',
+      version: 1,
       requesterName: '王宁',
       requesterContact: 'wa***@example.com',
       region: 'eu',
@@ -171,6 +207,7 @@ export function createInitialState(): WorkspaceState {
         systems,
       }),
       evidence: [],
+      receipts: [],
       conflicts: [
         '身份材料不足：授权书无法证明申请人与数据主体关系。',
         '疑似重复请求：与 DSR-2026-005 的请求人和处理类型相同。',
@@ -190,6 +227,7 @@ export function createInitialState(): WorkspaceState {
     {
       id: 'req-003',
       code: 'DSR-2026-003',
+      version: 1,
       requesterName: '刘晓',
       requesterContact: 'li***@example.com',
       region: 'us',
@@ -217,6 +255,34 @@ export function createInitialState(): WorkspaceState {
         systems,
       }).map((step, index) => (index === 1 ? { ...step, status: 'blocked', exceptionReason: '风控平台返回值与客服系统不一致。' } : step)),
       evidence: [],
+      receipts: [
+        receipt({
+          id: 'receipt-003-crm',
+          systemId: 'sys-crm',
+          requestVersion: 1,
+          processedAt: '2026-09-27T06:00:00.000Z',
+          receivedAt: '2026-09-27T06:05:00.000Z',
+          dedupKey: 'CRM-RECT-2058',
+          isFinal: true,
+          outcome: 'success',
+          resultDetail: '客户系统姓名已按申请更正。',
+          evidenceDigest: 'RC-3C02-21',
+          status: 'accepted',
+        }),
+        receipt({
+          id: 'receipt-003-risk-conflict',
+          systemId: 'sys-risk',
+          requestVersion: 1,
+          processedAt: '2026-09-28T08:20:00.000Z',
+          receivedAt: '2026-09-28T08:30:00.000Z',
+          dedupKey: 'RISK-RECT-6630',
+          isFinal: true,
+          outcome: 'conflict',
+          resultDetail: '风险标签关联姓名仍为旧值，拒绝直接更新。',
+          evidenceDigest: '',
+          status: 'conflict',
+        }),
+      ],
       conflicts: ['跨系统结果冲突：客户系统中的姓名已更正，但风控平台仍保留旧值。'],
       resultSummary: '',
       closureReason: '',
@@ -233,6 +299,7 @@ export function createInitialState(): WorkspaceState {
     {
       id: 'req-004',
       code: 'DSR-2026-004',
+      version: 1,
       requesterName: '陈妙',
       requesterContact: 'ch***@example.com',
       region: 'sg',
@@ -271,6 +338,21 @@ export function createInitialState(): WorkspaceState {
           protected: true,
         },
       ],
+      receipts: [
+        receipt({
+          id: 'receipt-004-marketing',
+          systemId: 'sys-marketing',
+          requestVersion: 1,
+          processedAt: '2026-09-28T08:55:00.000Z',
+          receivedAt: '2026-09-28T09:00:00.000Z',
+          dedupKey: 'MKT-WD-9014',
+          isFinal: true,
+          outcome: 'success',
+          resultDetail: '同意状态已撤回，自动化触达全部停止。',
+          evidenceDigest: 'E31A-880D',
+          status: 'accepted',
+        }),
+      ],
       conflicts: [],
       resultSummary: '营销平台已撤回同意并停止后续自动化触达。',
       closureReason: '',
@@ -287,6 +369,7 @@ export function createInitialState(): WorkspaceState {
     {
       id: 'req-005',
       code: 'DSR-2026-005',
+      version: 2,
       requesterName: '王宁',
       requesterContact: 'wa***@example.com',
       region: 'eu',
@@ -325,6 +408,49 @@ export function createInitialState(): WorkspaceState {
           protected: true,
         },
       ],
+      receipts: [
+        receipt({
+          id: 'receipt-005-crm-v2',
+          systemId: 'sys-crm',
+          requestVersion: 2,
+          processedAt: '2026-09-12T04:30:00.000Z',
+          receivedAt: '2026-09-12T04:35:00.000Z',
+          dedupKey: 'CRM-DEL-V2-1180',
+          isFinal: true,
+          outcome: 'success',
+          resultDetail: '按更正后的删除范围重新执行，客户记录已删除。',
+          evidenceDigest: 'RC-5C22-02',
+          status: 'accepted',
+        }),
+        receipt({
+          id: 'receipt-005-marketing-v2',
+          systemId: 'sys-marketing',
+          requestVersion: 2,
+          processedAt: '2026-09-12T06:10:00.000Z',
+          receivedAt: '2026-09-12T06:12:00.000Z',
+          dedupKey: 'MKT-DEL-V2-4471',
+          isFinal: true,
+          outcome: 'success',
+          resultDetail: '营销侧画像与触达队列按新版本完成删除。',
+          evidenceDigest: 'RC-5M22-09',
+          status: 'accepted',
+        }),
+        // v1 回执在范围修正后作废；其中一条为晚到的旧版本回执，未改回旧结论
+        receipt({
+          id: 'receipt-005-crm-v1-stale',
+          systemId: 'sys-crm',
+          requestVersion: 1,
+          processedAt: '2026-09-13T02:00:00.000Z',
+          receivedAt: '2026-09-13T02:30:00.000Z',
+          dedupKey: 'CRM-DEL-V1-9921',
+          isFinal: true,
+          outcome: 'success',
+          resultDetail: '旧删除范围（已被修正）的迟到回执。',
+          evidenceDigest: 'RC-5C11-88',
+          status: 'superseded',
+          voidReason: '迟到的旧版本回执：请求当前为 v2，该回执不作采纳。',
+        }),
+      ],
       conflicts: [],
       resultSummary: '已完成请求主体在两个系统中的删除，并保留最小合规凭证。',
       closureReason: '期限已到且任务完整，经复核后关闭。',
@@ -333,7 +459,7 @@ export function createInitialState(): WorkspaceState {
           'req-audit-005',
           '完成请求',
           '隐私负责人',
-          '处理结果合并完成并生成操作审计。',
+          'v2 全部系统当前版本最终回执齐备，处理结果合并完成并生成操作审计。',
           '2026-09-10T02:00:00.000Z',
         ),
       ],

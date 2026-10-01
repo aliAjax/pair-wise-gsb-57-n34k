@@ -1,32 +1,51 @@
 'use client'
 
+import { useState } from 'react'
 import {
   Badge,
   Box,
   Button,
   Flex,
+  FormControl,
+  FormLabel,
   Heading,
   HStack,
   Input,
+  Modal,
+  ModalBody,
+  ModalCloseButton,
+  ModalContent,
+  ModalFooter,
+  ModalHeader,
+  ModalOverlay,
   SimpleGrid,
   Table,
   TableContainer,
   Tbody,
   Td,
   Text,
+  Textarea,
   Th,
   Thead,
   Tr,
   VStack,
+  useDisclosure,
+  useToast,
 } from '@chakra-ui/react'
+import { RefreshCw } from 'lucide-react'
 import { PageHeader } from '@/components/PageHeader'
-import { useWorkspaceQuery } from '@/lib/hooks'
+import { useReportSystemChangeMutation, useWorkspaceQuery } from '@/lib/hooks'
 import { useWorkspaceStore } from '@/stores/workspaceStore'
 import { requestTypeLabels, systemStatusLabels } from '@/lib/schemas'
 
 export function SystemsPage() {
   const { data, isLoading } = useWorkspaceQuery()
   const store = useWorkspaceStore()
+  const reportChange = useReportSystemChangeMutation()
+  const toast = useToast()
+  const { isOpen, onOpen, onClose } = useDisclosure()
+  const [selectedSystemId, setSelectedSystemId] = useState('')
+  const [reason, setReason] = useState('')
 
   if (isLoading || !data) return <Box className="panel">正在加载系统清单...</Box>
 
@@ -38,6 +57,38 @@ export function SystemsPage() {
   const activeRequests = data.requests.filter(
     (request) => !['completed', 'rejected'].includes(request.status),
   )
+
+  function openChangeReport(systemId: string) {
+    setSelectedSystemId(systemId)
+    setReason('')
+    onOpen()
+  }
+
+  async function submitChangeReport() {
+    if (reason.trim().length < 4) {
+      toast({ title: '请填写系统改动说明（至少 4 个字）', status: 'warning' })
+      return
+    }
+    try {
+      await reportChange.mutateAsync({
+        systemId: selectedSystemId,
+        reason: reason.trim(),
+        operator: '系统管理员',
+      })
+      toast({
+        title: '系统改动已上报',
+        description: '关联请求的旧回执已作废待确认，已回到复核队列（任务与证据保留）。',
+        status: 'success',
+      })
+      onClose()
+    } catch (error) {
+      toast({
+        title: '上报失败',
+        description: error instanceof Error ? error.message : '请重试',
+        status: 'error',
+      })
+    }
+  }
 
   return (
     <Box>
@@ -106,6 +157,7 @@ export function SystemsPage() {
                 <Th>处理时限</Th>
                 <Th>支持请求类型</Th>
                 <Th>状态</Th>
+                <Th>回执版本控制</Th>
               </Tr>
             </Thead>
             <Tbody>
@@ -130,12 +182,63 @@ export function SystemsPage() {
                       {systemStatusLabels[system.status]}
                     </Badge>
                   </Td>
+                  <Td>
+                    <Button
+                      size="xs"
+                      variant="outline"
+                      colorScheme="orange"
+                      leftIcon={<RefreshCw size={13} />}
+                      onClick={() => openChangeReport(system.id)}
+                    >
+                      上报系统改动
+                    </Button>
+                  </Td>
                 </Tr>
               ))}
             </Tbody>
           </Table>
         </TableContainer>
       </Box>
+
+      <Modal isOpen={isOpen} onClose={onClose}>
+        <ModalOverlay />
+        <ModalContent>
+          <ModalHeader>
+            上报系统改动 ·{' '}
+            {data.systems.find((system) => system.id === selectedSystemId)?.name ?? ''}
+          </ModalHeader>
+          <ModalCloseButton />
+          <ModalBody>
+            <VStack align="stretch" spacing="4">
+              <Box bg="orange.50" border="1px solid" borderColor="orange.200" borderRadius="5px" p="3">
+                <Text fontSize="sm" color="orange.800">
+                  系统发生配置变更、数据迁移或补录后，关联请求中该系统的旧回执将全部作废待确认；请求（含已关闭请求）回到复核队列，已完成任务与证据保留，必须重新收到当前版本最终回执后才能再次关闭。
+                </Text>
+              </Box>
+              <FormControl isRequired>
+                <FormLabel>改动说明</FormLabel>
+                <Textarea
+                  value={reason}
+                  onChange={(event) => setReason(event.target.value)}
+                  placeholder="例如：数据模型 v3 上线、历史数据迁移重刷、删除接口切换到新通道"
+                />
+              </FormControl>
+            </VStack>
+          </ModalBody>
+          <ModalFooter>
+            <Button variant="ghost" mr="3" onClick={onClose}>
+              取消
+            </Button>
+            <Button
+              colorScheme="orange"
+              isLoading={reportChange.isPending}
+              onClick={submitChangeReport}
+            >
+              确认并作废旧回执
+            </Button>
+          </ModalFooter>
+        </ModalContent>
+      </Modal>
 
       <Box className="panel">
         <Flex className="panel-title">

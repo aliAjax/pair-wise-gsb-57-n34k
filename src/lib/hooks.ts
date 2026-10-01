@@ -135,4 +135,18 @@ export function useRecordExportMutation() {
   )
 }
 
+export function useIngestReceiptMutation() {
+  return useWorkspaceMutation(
+    (input: Omit<Parameters<typeof trpc.request.ingestReceipt.mutate>[0], 'state'>, state) =>
+      trpc.request.ingestReceipt.mutate({ ...input, state }),
+  )
+}
+
+export function useReportSystemChangeMutation() {
+  return useWorkspaceMutation(
+    (input: Omit<Parameters<typeof trpc.request.reportSystemChange.mutate>[0], 'state'>, state) =>
+      trpc.request.reportSystemChange.mutate({ ...input, state }),
+  )
+}
+
 export type { PrivacyRequest }

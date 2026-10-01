@@ -49,6 +49,21 @@ export function DashboardPage() {
     0,
   )
   const totalTasks = data.requests.reduce((total, request) => total + request.tasks.length, 0)
+  const receiptReadyRequests = data.requests.filter(
+    (request) =>
+      request.status !== 'rejected' &&
+      request.affectedSystemIds.length > 0 &&
+      request.affectedSystemIds.every((systemId) =>
+        request.receipts.some(
+          (receipt) =>
+            receipt.systemId === systemId &&
+            receipt.requestVersion === request.version &&
+            receipt.status === 'accepted' &&
+            receipt.isFinal &&
+            receipt.outcome === 'success',
+        ),
+      ),
+  ).length
 
   const sorted = [...openRequests].sort(
     (left, right) => new Date(left.dueAt).getTime() - new Date(right.dueAt).getTime(),
@@ -118,6 +133,9 @@ export function DashboardPage() {
             value={totalTasks ? (completedTasks / totalTasks) * 100 : 0}
             colorScheme="brand"
           />
+          <Text mt="2" color="gray.500" fontSize="xs">
+            当前版本最终回执齐备：{receiptReadyRequests} / {data.requests.length} 个请求
+          </Text>
         </Box>
       </Box>
 
@@ -190,9 +208,9 @@ export function DashboardPage() {
             <Flex gap="12px" align="flex-start">
               <Database size={20} color="#3e73a4" />
               <Box>
-                <Text fontWeight="600">跨系统结果合并</Text>
+                <Text fontWeight="600">跨系统回执版本对齐</Text>
                 <Text mt="1" color="gray.600" fontSize="sm">
-                  各系统任务分别执行，结果冲突时进入统一复核队列。
+                  回执按请求版本与系统处理时刻幂等去重；旧版本回执作废留痕，全部系统当前版本最终成功回执齐备后才能关闭。
                 </Text>
               </Box>
             </Flex>

@@ -8,6 +8,7 @@ export type {
   RequestStatus,
   RequestType,
   ReviewComment,
+  SystemReceipt,
   WorkflowStep,
   WorkspaceState,
 } from '@/lib/schemas'

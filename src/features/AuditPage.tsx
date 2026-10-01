@@ -67,8 +67,8 @@ export function AuditPage() {
 
   function sanitizedPackage() {
     return {
+      policy: '用户隐私权利请求履约操作规范 v2',
       exportedAt: new Date().toISOString(),
-      policy: '用户隐私权利请求履约操作规范 v1',
       summary: {
         requestCount: workspace.requests.length,
         openCount: workspace.requests.filter(
@@ -78,6 +78,7 @@ export function AuditPage() {
       },
       requests: workspace.requests.map((request) => ({
         code: request.code,
+        version: request.version,
         requesterName: request.requesterName,
         requesterContact: request.requesterContact,
         region: request.region,
@@ -95,7 +96,40 @@ export function AuditPage() {
         },
         affectedSystems: workspace.systems
           .filter((system) => request.affectedSystemIds.includes(system.id))
-          .map((system) => system.name),
+          .map((system) => ({ id: system.id, name: system.name })),
+        // 关闭门槛视图：每个系统是否都持有当前版本最终成功回执
+        receiptCoverage: {
+          requestVersion: request.version,
+          confirmedSystems: request.affectedSystemIds.filter(
+            (systemId) =>
+              request.receipts.some(
+                (receipt) =>
+                  receipt.systemId === systemId &&
+                  receipt.requestVersion === request.version &&
+                  receipt.status === 'accepted' &&
+                  receipt.isFinal &&
+                  receipt.outcome === 'success',
+              ),
+          ).length,
+          totalSystems: request.affectedSystemIds.length,
+        },
+        receipts: request.receipts.map((receipt) => ({
+          systemId: receipt.systemId,
+          systemName:
+            workspace.systems.find((system) => system.id === receipt.systemId)?.name ??
+            receipt.systemId,
+          requestVersion: receipt.requestVersion,
+          processedAt: receipt.processedAt,
+          receivedAt: receipt.receivedAt,
+          dedupKey: receipt.dedupKey,
+          isFinal: receipt.isFinal,
+          outcome: receipt.outcome,
+          status: receipt.status,
+          voidReason: receipt.voidReason,
+          resultDetail: receipt.resultDetail,
+          evidenceDigest: receipt.evidenceDigest,
+          duplicateCount: receipt.duplicateCount,
+        })),
         tasks: request.tasks.map((task) => ({
           name: task.name,
           status: task.status,
@@ -239,7 +273,7 @@ export function AuditPage() {
           <Badge colorScheme="green">已校验</Badge>
         </Flex>
         <Text color="gray.600" fontSize="sm">
-          导出内容仅包含掩码身份引用、摘要、任务状态、证据元数据和审计记录；系统不会导出原始身份材料。
+          导出内容仅包含掩码身份引用、摘要、任务状态、证据元数据、按请求当前版本对齐的跨系统回执和审计记录；系统不会导出原始身份材料。请求版本、详情与导出包保持一致。
         </Text>
       </Box>
     </Box>

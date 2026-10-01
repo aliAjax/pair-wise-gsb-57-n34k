@@ -2,8 +2,8 @@ import type { ReactNode } from 'react'
 import { Box, HStack, Heading, Text } from '@chakra-ui/react'
 
 interface Props {
-  title: string
-  description: string
+  title: ReactNode
+  description: ReactNode
   actions?: ReactNode
 }
 

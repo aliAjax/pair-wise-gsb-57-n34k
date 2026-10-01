@@ -3,9 +3,26 @@ import type {
   PrivacyRequest,
   RequestStatus,
   RequestType,
+  SystemReceipt,
   WorkspaceState,
 } from '@/types/domain'
 import { addDays, buildWorkflowSteps, responseDays } from './workflow'
+import {
+  AWAIT_CONFLICT_PREFIX,
+  CONFLICT_CONFLICT_PREFIX,
+  FAILURE_CONFLICT_PREFIX,
+  acceptedFinalReceipt,
+  allSystemsConfirmed,
+  clearReceiptConflictsForSystem,
+  clearVersionReceiptConflicts,
+  completeSystemTasks,
+  findDuplicateReceipt,
+  isLiveReceipt,
+  missingFinalSystems,
+  recomputeStatus,
+  supersedeLiveForSystem,
+  supersedeReceipts,
+} from './receipts'
 
 const cloneState = (state: WorkspaceState): WorkspaceState => structuredClone(state)
 const now = () => new Date().toISOString()
@@ -97,6 +114,7 @@ export function createRequest(
   const request: PrivacyRequest = {
     id: requestId,
     code: `DSR-2026-${String(nextNumber).padStart(3, '0')}`,
+    version: 1,
     requesterName: input.requesterName.trim(),
     requesterContact: input.requesterContact.trim(),
     region: input.region,
@@ -124,6 +142,7 @@ export function createRequest(
       systems: draft.systems,
     }),
     evidence: [],
+    receipts: [],
     conflicts: [],
     resultSummary: '',
     closureReason: '',
@@ -158,15 +177,54 @@ export function saveRequest(
   patch: Partial<PrivacyRequest>,
   operator: string,
 ): WorkspaceState {
-  return mutateRequest(
-    state,
-    requestId,
-    (request) => {
-      Object.assign(request, patch)
-      request.audit = request.audit
-    },
-    { action: '更新请求信息', operator, detail: '更新申请人、地区、请求类型或涉及系统。' },
+  const draft = cloneState(state)
+  const request = draft.requests.find((item) => item.id === requestId)
+  if (!request) throw new Error('请求不存在')
+
+  const nextType = patch.type ?? request.type
+  const nextSystemIds = patch.affectedSystemIds ?? request.affectedSystemIds
+  const scopeChanged =
+    nextType !== request.type ||
+    nextSystemIds.length !== request.affectedSystemIds.length ||
+    nextSystemIds.some((systemId, index) => systemId !== request.affectedSystemIds[index])
+
+  let removedCount = 0
+  if (scopeChanged) {
+    const oldVersion = request.version
+    request.version = oldVersion + 1
+    removedCount = supersedeReceipts(
+      request,
+      `请求版本升级到 v${request.version}（类型或涉及系统改动），v${oldVersion} 回执作废待确认。`,
+      oldVersion,
+    )
+    clearVersionReceiptConflicts(request)
+    for (const systemId of nextSystemIds) {
+      const system = draft.systems.find((item) => item.id === systemId)
+      request.conflicts.push(
+        `${AWAIT_CONFLICT_PREFIX}：${system?.name ?? systemId}（${systemId}）需在版本 v${request.version} 重新确认最终回执。`,
+      )
+    }
+    // 涉及系统有改动：旧结论不能改回已复核/已关闭状态，回到复核队列；任务与证据保留
+    request.status = 'review-required'
+  }
+
+  Object.assign(request, patch)
+  if (scopeChanged) {
+    // 受保护字段即使出现在 patch 中也不允许被覆盖
+    request.status = 'review-required'
+  }
+
+  appendAudit(
+    draft,
+    request,
+    '更新请求信息',
+    operator,
+    scopeChanged
+      ? `请求类型或涉及系统改动，版本升级为 v${request.version}，${removedCount} 条旧版本回执已作废待确认；任务与证据保留。`
+      : '更新申请人、地区、联系方式等基本信息。',
   )
+  draft.revision += 1
+  return draft
 }
 
 export function verifyIdentity(
@@ -195,7 +253,7 @@ export function verifyIdentity(
         )
         const nextTask = request.tasks.find((task) => task.status === 'pending')
         if (nextTask) nextTask.status = 'active'
-        request.status = request.conflicts.length ? 'review-required' : 'processing'
+        recomputeStatus(request)
       } else {
         if (identityTask) {
           identityTask.status = 'blocked'
@@ -263,15 +321,9 @@ export function taskAction(
       } else {
         task.status = 'blocked'
         task.exceptionReason = note
-        request.status = 'review-required'
         request.conflicts.push(`任务阻塞：${task.name}，${note}`)
       }
-      const executableTasks = request.tasks.filter((item) => !item.id.endsWith('-close'))
-      if (executableTasks.every((item) => item.status === 'completed')) {
-        request.status = 'pending-close'
-      } else if (action !== 'block') {
-        request.status = 'processing'
-      }
+      recomputeStatus(request)
     },
     {
       action:
@@ -346,11 +398,7 @@ export function resolveConflict(
       const conflict = request.conflicts[conflictIndex]
       if (!conflict) throw new Error('冲突项不存在')
       request.conflicts.splice(conflictIndex, 1)
-      if (!request.conflicts.length && request.identity.status === 'verified') {
-        request.status = 'processing'
-      } else {
-        request.status = 'review-required'
-      }
+      recomputeStatus(request)
     },
     { action: '复核处理冲突', operator, detail: resolution },
   )
@@ -383,38 +431,51 @@ export function closeRequest(
   closureReason: string,
   operator: string,
 ): WorkspaceState {
-  return mutateRequest(
-    state,
-    requestId,
-    (request) => {
-      if (request.identity.status !== 'verified') {
-        throw new Error('身份核验尚未通过，不能关闭请求')
-      }
-      const requiredTasks = request.tasks.filter((task) => !task.id.endsWith('-close'))
-      if (requiredTasks.some((task) => task.status !== 'completed')) {
-        throw new Error('仍有未完成任务，不能关闭请求')
-      }
-      if (request.conflicts.length) {
-        throw new Error('仍有未解决冲突，不能关闭请求')
-      }
-      if (new Date(request.dueAt) > new Date() && !closureReason.trim()) {
-        throw new Error('截止时间前关闭必须填写提前关闭理由')
-      }
-      request.resultSummary = resultSummary
-      request.closureReason = closureReason
-      request.status = 'completed'
-      const closeTask = request.tasks.find((task) => task.id.endsWith('-close'))
-      if (closeTask) {
-        closeTask.status = 'completed'
-        closeTask.completedAt = now()
-      }
-    },
-    {
-      action: '完成并关闭请求',
-      operator,
-      detail: closureReason ? `提前关闭理由：${closureReason}` : '截止时间后完成关闭。',
-    },
+  const draft = cloneState(state)
+  const request = draft.requests.find((item) => item.id === requestId)
+  if (!request) throw new Error('请求不存在')
+  if (request.identity.status !== 'verified') {
+    throw new Error('身份核验尚未通过，不能关闭请求')
+  }
+  const requiredTasks = request.tasks.filter((task) => !task.id.endsWith('-close'))
+  if (requiredTasks.some((task) => task.status !== 'completed')) {
+    throw new Error('仍有未完成任务，不能关闭请求')
+  }
+  if (request.conflicts.length) {
+    throw new Error('仍有未解决冲突，不能关闭请求')
+  }
+  const missingSystemIds = missingFinalSystems(request)
+  if (missingSystemIds.length) {
+    const names = missingSystemIds
+      .map((systemId) => draft.systems.find((system) => system.id === systemId)?.name ?? systemId)
+      .join('、')
+    throw new Error(
+      `仍有系统缺少当前版本 v${request.version} 的最终成功回执：${names}，不能关闭请求`,
+    )
+  }
+  if (!allSystemsConfirmed(request)) {
+    throw new Error('并非全部涉及系统都已确认当前版本最终回执，不能关闭请求')
+  }
+  if (new Date(request.dueAt) > new Date() && !closureReason.trim()) {
+    throw new Error('截止时间前关闭必须填写提前关闭理由')
+  }
+  request.resultSummary = resultSummary
+  request.closureReason = closureReason
+  request.status = 'completed'
+  const closeTask = request.tasks.find((task) => task.id.endsWith('-close'))
+  if (closeTask) {
+    closeTask.status = 'completed'
+    closeTask.completedAt = now()
+  }
+  appendAudit(
+    draft,
+    request,
+    '完成并关闭请求',
+    operator,
+    `${closureReason ? `提前关闭理由：${closureReason}` : '截止时间后完成关闭。'} 关闭版本 v${request.version}，全部 ${request.affectedSystemIds.length} 个系统当前版本最终回执齐备。`,
   )
+  draft.revision += 1
+  return draft
 }
 
 export function addComment(
@@ -449,7 +510,229 @@ export function recordExport(
     id: id('audit'),
     action: '导出处理包',
     operator,
-    detail: `导出范围：${scope}，包含 ${count} 条请求。`,
+    detail: `导出范围：${scope}，包含 ${count} 条请求，按各请求当前版本导出。`,
+    createdAt: now(),
+  })
+  draft.revision += 1
+  return draft
+}
+
+export interface IngestReceiptInput {
+  systemId: string
+  requestVersion: number
+  processedAt: string
+  dedupKey: string
+  isFinal: boolean
+  outcome: 'success' | 'failure' | 'conflict'
+  resultDetail: string
+  evidenceDigest: string
+}
+
+/**
+ * 接入一份跨系统回执。
+ * - 每份回执必须带请求版本与系统处理时刻；
+ * - 重复回执（同系统+同版本+同幂等键）只保留一条，仅累加送达次数，不重复登记证据、不改动结论；
+ * - 旧版本迟到回执只留痕作废，不能把已复核请求改回旧结论；
+ * - 失败或结果冲突 -> 请求回到复核队列，任务与证据保留；
+ * - 当前版本最终成功回执 -> 完成该系统任务，全部系统齐备后才进入待关闭。
+ */
+export function ingestReceipt(
+  state: WorkspaceState,
+  requestId: string,
+  input: IngestReceiptInput,
+  operator: string,
+): WorkspaceState {
+  const draft = cloneState(state)
+  const request = draft.requests.find((item) => item.id === requestId)
+  if (!request) throw new Error('请求不存在')
+  const system = draft.systems.find((item) => item.id === input.systemId)
+  const systemName = system?.name ?? input.systemId
+  if (!request.affectedSystemIds.includes(input.systemId)) {
+    throw new Error(`${systemName} 不在该请求的涉及系统范围内，回执被拒绝`)
+  }
+  if (!Number.isFinite(new Date(input.processedAt).getTime())) {
+    throw new Error('系统处理时刻格式无效')
+  }
+  if (input.requestVersion > request.version) {
+    throw new Error(
+      `回执版本 v${input.requestVersion} 高于请求当前版本 v${request.version}，回执被拒绝`,
+    )
+  }
+
+  // 旧版本迟到回执：留痕但不改当前结论
+  if (input.requestVersion < request.version) {
+    const stale: SystemReceipt = {
+      id: id('receipt'),
+      systemId: input.systemId,
+      requestVersion: input.requestVersion,
+      processedAt: input.processedAt,
+      receivedAt: now(),
+      dedupKey: input.dedupKey,
+      isFinal: input.isFinal,
+      outcome: input.outcome,
+      resultDetail: input.resultDetail,
+      evidenceDigest: input.evidenceDigest,
+      status: 'superseded',
+      voidReason: `迟到的旧版本回执：请求当前为 v${request.version}，该回执不作采纳。`,
+      duplicateCount: 0,
+    }
+    request.receipts.unshift(stale)
+    appendAudit(
+      draft,
+      request,
+      '忽略旧版本回执',
+      operator,
+      `${systemName} 的 v${input.requestVersion} 回执晚到（系统处理时刻 ${input.processedAt}），请求当前版本 v${request.version}，旧结论不回滚，已留痕。`,
+    )
+    draft.revision += 1
+    return draft
+  }
+
+  // 重复送达：幂等，只更新计数与最后送达时间
+  const duplicate = findDuplicateReceipt(request, {
+    systemId: input.systemId,
+    requestVersion: input.requestVersion,
+    dedupKey: input.dedupKey,
+  })
+  if (duplicate) {
+    duplicate.duplicateCount += 1
+    duplicate.lastDeliveredAt = now()
+    appendAudit(
+      draft,
+      request,
+      '重复回执已去重',
+      operator,
+      `${systemName} 回执 ${input.dedupKey}（v${input.requestVersion}）重复送达，仅保留首条，累计送达 ${duplicate.duplicateCount + 1} 次，未重复登记证据。`,
+    )
+    draft.revision += 1
+    return draft
+  }
+
+  // 同一系统当前版本新回执：先作废旧有效回执
+  const supersededCount = supersedeLiveForSystem(
+    request,
+    input.systemId,
+    `被同系统 v${request.version} 更新回执 ${input.dedupKey} 覆盖。`,
+  )
+
+  const receivedAt = now()
+  const receipt: SystemReceipt = {
+    id: id('receipt'),
+    systemId: input.systemId,
+    requestVersion: input.requestVersion,
+    processedAt: input.processedAt,
+    receivedAt,
+    dedupKey: input.dedupKey,
+    isFinal: input.isFinal,
+    outcome: input.outcome,
+    resultDetail: input.resultDetail,
+    evidenceDigest: input.evidenceDigest,
+    status: input.isFinal
+      ? input.outcome === 'success'
+        ? 'accepted'
+        : input.outcome === 'failure'
+          ? 'failed'
+          : 'conflict'
+      : 'processing',
+    duplicateCount: 0,
+  }
+  request.receipts.unshift(receipt)
+
+  let evidenceName = ''
+  if (input.isFinal && input.outcome === 'success') {
+    // 成功最终回执覆盖此前失败/冲突复核项
+    clearReceiptConflictsForSystem(request, input.systemId)
+    completeSystemTasks(request, input.systemId, receivedAt)
+    if (input.evidenceDigest) {
+      evidenceName = `${systemName}当前版本处理回执`
+      request.evidence.push({
+        id: id('evidence'),
+        stepId: `${request.id}-execute-${input.systemId}`,
+        name: evidenceName,
+        evidenceType: 'system-response',
+        digest: input.evidenceDigest,
+        uploadedBy: operator,
+        uploadedAt: receivedAt,
+        protected: true,
+      })
+    }
+  } else if (input.isFinal) {
+    const prefix = input.outcome === 'failure' ? FAILURE_CONFLICT_PREFIX : CONFLICT_CONFLICT_PREFIX
+    const label = input.outcome === 'failure' ? '处理失败' : '结果冲突'
+    const message = `${prefix}：${systemName}（${input.systemId}）v${input.requestVersion} 回执${label}，${input.resultDetail}`
+    if (!request.conflicts.some((conflict) => conflict === message)) {
+      request.conflicts.push(message)
+    }
+  }
+
+  recomputeStatus(request)
+
+  const outcomeText =
+    input.outcome === 'success' ? '成功' : input.outcome === 'failure' ? '失败' : '结果冲突'
+  appendAudit(
+    draft,
+    request,
+    input.isFinal ? '接收系统最终回执' : '接收系统处理中回执',
+    operator,
+    `${systemName} v${input.requestVersion} 回执（幂等键 ${input.dedupKey}，系统处理时刻 ${input.processedAt}）：${outcomeText}，${input.resultDetail}${supersededCount ? `；覆盖 ${supersededCount} 条同版本旧回执` : ''}${evidenceName ? '；回执证据已受保护登记' : ''}。`,
+  )
+  draft.revision += 1
+  return draft
+}
+
+/**
+ * 上报数据系统发生改动（配置变更、数据迁移、补录等）。
+ * 该系统相关进行中/已关闭请求的现有回执全部作废待确认，请求回到复核队列，
+ * 已完成任务与证据保留；系统需按请求当前版本重新回最终回执。
+ */
+export function reportSystemChange(
+  state: WorkspaceState,
+  systemId: string,
+  reason: string,
+  operator: string,
+): WorkspaceState {
+  const draft = cloneState(state)
+  const system = draft.systems.find((item) => item.id === systemId)
+  if (!system) throw new Error('系统不存在')
+  const affected = draft.requests.filter((request) =>
+    request.affectedSystemIds.includes(systemId),
+  )
+  if (!affected.length) throw new Error('该系统当前没有关联的隐私请求')
+
+  for (const request of affected) {
+    const voided = supersedeReceipts(
+      request,
+      `系统 ${system.name} 发生改动（${reason}），旧回执作废，需按当前版本重新确认。`,
+    )
+    // 移除该系统旧的待确认/失败/冲突复核项，避免叠加过期信息
+    request.conflicts = request.conflicts.filter(
+      (conflict) =>
+        !(
+          (conflict.startsWith(AWAIT_CONFLICT_PREFIX) ||
+            conflict.startsWith(FAILURE_CONFLICT_PREFIX) ||
+            conflict.startsWith(CONFLICT_CONFLICT_PREFIX)) &&
+          conflict.includes(systemId)
+        ),
+    )
+    request.conflicts.push(
+      `${AWAIT_CONFLICT_PREFIX}：${system.name}（${systemId}）发生改动，v${request.version} 的 ${voided} 条旧回执已作废，等待系统重新回传当前版本最终回执。`,
+    )
+    // 已关闭请求也回到复核队列；任务和证据保留，不允许旧结论继续成立
+    request.status = 'review-required'
+    appendAudit(
+      draft,
+      request,
+      '系统改动作废回执',
+      operator,
+      `${system.name} 发生改动：${reason}。${voided} 条回执作废待确认，请求回到复核队列，已完成任务与证据保留。`,
+    )
+  }
+
+  draft.audit.unshift({
+    id: id('audit'),
+    action: '上报数据系统改动',
+    operator,
+    detail: `${system.name}（${systemId}）：${reason}；影响 ${affected.length} 个请求，旧回执全部作废待确认。`,
     createdAt: now(),
   })
   draft.revision += 1

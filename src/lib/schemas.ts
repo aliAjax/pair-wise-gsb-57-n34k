@@ -82,9 +82,31 @@ export const dataSystemSchema = z.object({
   status: z.enum(['active', 'maintenance', 'retired']),
 })
 
+export const receiptSchema = z.object({
+  id: z.string(),
+  systemId: z.string(),
+  // 回执自带的请求版本号；只接受与请求当前版本一致的回执
+  requestVersion: z.number().int().positive(),
+  // 系统侧处理时刻（由系统时钟给出，区别于工作台接收时刻）
+  processedAt: z.string(),
+  receivedAt: z.string(),
+  // 系统幂等键：同一 systemId + requestVersion + dedupKey 视为重复送达
+  dedupKey: z.string(),
+  isFinal: z.boolean(),
+  outcome: z.enum(['success', 'failure', 'conflict']),
+  resultDetail: z.string(),
+  evidenceDigest: z.string(),
+  status: z.enum(['processing', 'accepted', 'failed', 'conflict', 'superseded']),
+  voidReason: z.string().optional(),
+  duplicateCount: z.number().int().nonnegative(),
+  lastDeliveredAt: z.string().optional(),
+})
+
 export const privacyRequestSchema = z.object({
   id: z.string(),
   code: z.string(),
+  // 请求当前版本；请求类型或涉及系统改动时递增，旧版本回执随之作废
+  version: z.number().int().positive().default(1),
   requesterName: z.string(),
   requesterContact: z.string(),
   region: regionSchema,
@@ -98,6 +120,7 @@ export const privacyRequestSchema = z.object({
   affectedSystemIds: z.array(z.string()),
   tasks: z.array(workflowStepSchema),
   evidence: z.array(evidenceSchema),
+  receipts: z.array(receiptSchema).default([]),
   conflicts: z.array(z.string()),
   resultSummary: z.string(),
   closureReason: z.string(),
@@ -117,8 +140,45 @@ export const workspaceStateSchema = z.object({
 export const saveRequestInputSchema = z.object({
   state: workspaceStateSchema,
   requestId: z.string(),
-  patch: privacyRequestSchema.partial(),
+  patch: privacyRequestSchema
+    .partial()
+    .omit({
+      id: true,
+      code: true,
+      version: true,
+      status: true,
+      identity: true,
+      requestedAt: true,
+      tasks: true,
+      evidence: true,
+      receipts: true,
+      conflicts: true,
+      resultSummary: true,
+      closureReason: true,
+      audit: true,
+    }),
   operator: z.string().default('当前用户'),
+})
+
+export const ingestReceiptInputSchema = z.object({
+  state: workspaceStateSchema,
+  requestId: z.string(),
+  systemId: z.string(),
+  requestVersion: z.number().int().positive(),
+  processedAt: z.string(),
+  dedupKey: z.string().min(1),
+  isFinal: z.boolean(),
+  outcome: z.enum(['success', 'failure', 'conflict']),
+  resultDetail: z.string().min(1),
+  evidenceDigest: z.string().default(''),
+  operator: z.string().default('跨系统回执接口'),
+})
+
+export const reportSystemChangeInputSchema = z.object({
+  state: workspaceStateSchema,
+  systemId: z.string(),
+  reason: z.string().min(4),
+  operator: z.string(),
 })
 
 export const createRequestInputSchema = z.object({
@@ -224,6 +284,7 @@ export type ExecutionEvidence = z.infer<typeof evidenceSchema>
 export type ReviewComment = z.infer<typeof commentSchema>
 export type AuditEntry = z.infer<typeof auditEntrySchema>
 export type DataSystem = z.infer<typeof dataSystemSchema>
+export type SystemReceipt = z.infer<typeof receiptSchema>
 export type PrivacyRequest = z.infer<typeof privacyRequestSchema>
 export type WorkspaceState = z.infer<typeof workspaceStateSchema>
 
@@ -257,4 +318,18 @@ export const systemStatusLabels: Record<DataSystem['status'], string> = {
   active: '在用',
   maintenance: '维护中',
   retired: '已退役',
+}
+
+export const receiptOutcomeLabels: Record<SystemReceipt['outcome'], string> = {
+  success: '处理成功',
+  failure: '处理失败',
+  conflict: '结果冲突',
+}
+
+export const receiptStatusLabels: Record<SystemReceipt['status'], string> = {
+  processing: '处理中（非最终）',
+  accepted: '已采纳',
+  failed: '已失败',
+  conflict: '结果冲突',
+  superseded: '旧版本已作废',
 }
