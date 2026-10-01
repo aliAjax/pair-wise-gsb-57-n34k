@@ -1,0 +1,32 @@
+{
+  "name": "pair-wise-gsb-57",
+  "private": true,
+  "version": "1.0.0",
+  "scripts": {
+    "dev": "next dev -H 0.0.0.0 -p 18457",
+    "build": "next build",
+    "start": "next start -H 0.0.0.0 -p 18457",
+    "lint": "next lint"
+  },
+  "dependencies": {
+    "@chakra-ui/react": "2.10.4",
+    "@emotion/react": "11.14.0",
+    "@emotion/styled": "11.14.0",
+    "@tanstack/react-query": "5.64.2",
+    "@trpc/client": "11.0.0",
+    "@trpc/server": "11.0.0",
+    "framer-motion": "11.15.0",
+    "lucide-react": "0.468.0",
+    "next": "14.2.35",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "zod": "3.24.1",
+    "zustand": "5.0.3"
+  },
+  "devDependencies": {
+    "@types/node": "22.10.7",
+    "@types/react": "18.3.18",
+    "@types/react-dom": "18.3.5",
+    "typescript": "5.7.3"
+  }
+}
