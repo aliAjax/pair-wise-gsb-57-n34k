@@ -44,6 +44,7 @@ import {
   useWorkspaceQuery,
 } from '@/lib/hooks'
 import { deadlineState } from '@/services/workflow'
+import { hasStaleReceipts } from '@/services/receipt'
 
 export function ReviewPage() {
   const router = useRouter()
@@ -69,6 +70,7 @@ export function ReviewPage() {
           request.identity.status === 'insufficient' ||
           request.duplicateOf ||
           request.conflicts.length > 0 ||
+          hasStaleReceipts(request) ||
           new Date(request.dueAt).getTime() < Date.now(),
       ) ?? [],
     [data],
@@ -198,7 +200,12 @@ export function ReviewPage() {
                 return (
                   <Tr key={request.id}>
                     <Td>
-                      <Text fontWeight="600">{request.code}</Text>
+                      <Text fontWeight="600">
+                        {request.code}{' '}
+                        <Badge colorScheme="purple" variant="outline">
+                          v{request.version}
+                        </Badge>
+                      </Text>
                       <Text color="gray.500" fontSize="xs">
                         {request.requesterName}
                       </Text>
@@ -210,6 +217,11 @@ export function ReviewPage() {
                       <VStack align="stretch" spacing="1">
                         {request.duplicateOf ? (
                           <Badge colorScheme="orange">疑似重复 {request.duplicateOf}</Badge>
+                        ) : null}
+                        {hasStaleReceipts(request) ? (
+                          <Badge colorScheme="yellow">
+                            旧回执已作废待确认（等待 v{request.version}）
+                          </Badge>
                         ) : null}
                         {request.conflicts.map((conflict, index) => (
                           <Text key={`${conflict}-${index}`} fontSize="sm">

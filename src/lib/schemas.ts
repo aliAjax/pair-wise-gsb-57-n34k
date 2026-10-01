@@ -71,6 +71,21 @@ export const auditEntrySchema = z.object({
   createdAt: z.string(),
 })
 
+export const receiptStatusSchema = z.enum(['success', 'failure', 'conflict'])
+
+export const systemReceiptSchema = z.object({
+  id: z.string(),
+  systemId: z.string(),
+  requestVersion: z.number().int().positive(),
+  status: receiptStatusSchema,
+  resultSummary: z.string(),
+  systemProcessedAt: z.string(),
+  receivedAt: z.string(),
+  superseded: z.boolean(),
+  duplicateDeliveries: z.number().int().nonnegative().default(0),
+  evidenceId: z.string().optional(),
+})
+
 export const dataSystemSchema = z.object({
   id: z.string(),
   name: z.string(),
@@ -85,6 +100,7 @@ export const dataSystemSchema = z.object({
 export const privacyRequestSchema = z.object({
   id: z.string(),
   code: z.string(),
+  version: z.number().int().positive().default(1),
   requesterName: z.string(),
   requesterContact: z.string(),
   region: regionSchema,
@@ -96,6 +112,7 @@ export const privacyRequestSchema = z.object({
   extendedDays: z.number(),
   duplicateOf: z.string().optional(),
   affectedSystemIds: z.array(z.string()),
+  systemReceipts: z.array(systemReceiptSchema).default([]),
   tasks: z.array(workflowStepSchema),
   evidence: z.array(evidenceSchema),
   conflicts: z.array(z.string()),
@@ -215,6 +232,17 @@ export const recordExportInputSchema = z.object({
   operator: z.string(),
 })
 
+export const ingestReceiptInputSchema = z.object({
+  state: workspaceStateSchema,
+  requestId: z.string(),
+  systemId: z.string().min(1),
+  requestVersion: z.number().int().positive(),
+  status: receiptStatusSchema,
+  resultSummary: z.string().min(2),
+  systemProcessedAt: z.string().min(4),
+  operator: z.string(),
+})
+
 export type RequestType = z.infer<typeof requestTypeSchema>
 export type RequestStatus = z.infer<typeof requestStatusSchema>
 export type Region = z.infer<typeof regionSchema>
@@ -224,6 +252,8 @@ export type ExecutionEvidence = z.infer<typeof evidenceSchema>
 export type ReviewComment = z.infer<typeof commentSchema>
 export type AuditEntry = z.infer<typeof auditEntrySchema>
 export type DataSystem = z.infer<typeof dataSystemSchema>
+export type SystemReceipt = z.infer<typeof systemReceiptSchema>
+export type ReceiptStatus = z.infer<typeof receiptStatusSchema>
 export type PrivacyRequest = z.infer<typeof privacyRequestSchema>
 export type WorkspaceState = z.infer<typeof workspaceStateSchema>
 
@@ -257,4 +287,10 @@ export const systemStatusLabels: Record<DataSystem['status'], string> = {
   active: '在用',
   maintenance: '维护中',
   retired: '已退役',
+}
+
+export const receiptStatusLabels: Record<ReceiptStatus, string> = {
+  success: '处理成功',
+  failure: '执行失败',
+  conflict: '结果冲突',
 }

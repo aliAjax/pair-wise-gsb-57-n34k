@@ -187,7 +187,12 @@ export function RequestListPage() {
                 const deadline = deadlineState(request.dueAt)
                 return (
                   <Tr key={request.id}>
-                    <Td className="mono">{request.code}</Td>
+                    <Td className="mono">
+                      {request.code}
+                      <Badge ml="1" colorScheme="purple" variant="outline">
+                        v{request.version}
+                      </Badge>
+                    </Td>
                     <Td>
                       <Text fontWeight="600">{request.requesterName}</Text>
                       <Text color="gray.500" fontSize="xs">
@@ -210,6 +215,17 @@ export function RequestListPage() {
                         {request.duplicateOf ? <Badge colorScheme="orange">重复</Badge> : null}
                         {request.identity.status === 'insufficient' ? (
                           <Badge colorScheme="red">身份不足</Badge>
+                        ) : null}
+                        {request.systemReceipts.some(
+                          (receipt) =>
+                            receipt.superseded || receipt.requestVersion < request.version,
+                        ) ? (
+                          <Badge colorScheme="yellow">旧回执作废</Badge>
+                        ) : null}
+                        {request.conflicts.some((conflict) =>
+                          conflict.startsWith('系统回执缺失'),
+                        ) ? (
+                          <Badge colorScheme="cyan">最终回执未齐</Badge>
                         ) : null}
                         {request.conflicts.length ? (
                           <Badge colorScheme="red">{request.conflicts.length} 项冲突</Badge>

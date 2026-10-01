@@ -69,6 +69,8 @@ export function AuditPage() {
     return {
       exportedAt: new Date().toISOString(),
       policy: '用户隐私权利请求履约操作规范 v1',
+      receiptVersionPolicy:
+        '每份跨系统回执带请求版本与系统处理时刻；重复送达只保留一条，系统范围变更后旧版本回执作废待确认，所有系统回传当前版本成功最终回执后才能关闭。',
       summary: {
         requestCount: workspace.requests.length,
         openCount: workspace.requests.filter(
@@ -78,6 +80,7 @@ export function AuditPage() {
       },
       requests: workspace.requests.map((request) => ({
         code: request.code,
+        version: request.version,
         requesterName: request.requesterName,
         requesterContact: request.requesterContact,
         region: request.region,
@@ -96,6 +99,17 @@ export function AuditPage() {
         affectedSystems: workspace.systems
           .filter((system) => request.affectedSystemIds.includes(system.id))
           .map((system) => system.name),
+        receipts: request.systemReceipts.map((receipt) => ({
+          system: workspace.systems.find((system) => system.id === receipt.systemId)?.name ?? receipt.systemId,
+          requestVersion: receipt.requestVersion,
+          currentVersion: request.version,
+          status: receipt.status,
+          resultSummary: receipt.resultSummary,
+          systemProcessedAt: receipt.systemProcessedAt,
+          receivedAt: receipt.receivedAt,
+          superseded: receipt.superseded,
+          duplicateDeliveries: receipt.duplicateDeliveries,
+        })),
         tasks: request.tasks.map((task) => ({
           name: task.name,
           status: task.status,
@@ -110,7 +124,9 @@ export function AuditPage() {
           uploadedAt: evidence.uploadedAt,
         })),
         conflicts: request.conflicts,
-        resultSummary: request.resultSummary,
+        resultSummary: request.resultSummary
+          ? `[v${request.version}] ${request.resultSummary}`
+          : request.resultSummary,
         closureReason: request.closureReason,
       })),
       audit: auditEntries,
@@ -134,13 +150,16 @@ export function AuditPage() {
 
   function exportCsv() {
     const header = ['时间', '请求编号', '操作', '操作人', '说明']
-    const rows = auditEntries.map((entry) => [
-      new Date(entry.createdAt).toLocaleString('zh-CN'),
-      workspace.requests.find((request) => request.id === entry.requestId)?.code ?? '系统',
-      entry.action,
-      entry.operator,
-      entry.detail,
-    ])
+    const rows = auditEntries.map((entry) => {
+      const req = workspace.requests.find((request) => request.id === entry.requestId)
+      return [
+        new Date(entry.createdAt).toLocaleString('zh-CN'),
+        req ? `${req.code} v${req.version}` : '系统',
+        entry.action,
+        entry.operator,
+        entry.detail,
+      ]
+    })
     const csv = [header, ...rows]
       .map((row) => row.map((cell) => `"${String(cell).replaceAll('"', '""')}"`).join(','))
       .join('\n')
@@ -221,7 +240,12 @@ export function AuditPage() {
                     {new Date(entry.createdAt).toLocaleString('zh-CN')}
                   </Td>
                   <Td className="mono">
-                    {workspace.requests.find((request) => request.id === entry.requestId)?.code ?? '系统'}
+                    {(() => {
+                      const req = workspace.requests.find(
+                        (request) => request.id === entry.requestId,
+                      )
+                      return req ? `${req.code} v${req.version}` : '系统'
+                    })()}
                   </Td>
                   <Td>{entry.action}</Td>
                   <Td>{entry.operator}</Td>

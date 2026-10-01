@@ -1,5 +1,7 @@
 export type {
   DataSystem,
+  ReceiptStatus,
+  SystemReceipt,
   AuditEntry,
   ExecutionEvidence,
   IdentityCheck,

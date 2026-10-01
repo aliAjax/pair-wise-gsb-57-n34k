@@ -150,7 +150,10 @@ export function DashboardPage() {
                       <Td>
                         <NextLink href={`/requests/${request.id}`}>
                           <Text color="brand.600" fontWeight="600">
-                            {request.code}
+                            {request.code}{' '}
+                            <Box as="span" fontSize="xs" color="purple.600">
+                              v{request.version}
+                            </Box>
                           </Text>
                         </NextLink>
                       </Td>

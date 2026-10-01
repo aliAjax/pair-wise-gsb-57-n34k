@@ -100,6 +100,13 @@ export function useAddConflictMutation() {
   )
 }
 
+export function useIngestReceiptMutation() {
+  return useWorkspaceMutation(
+    (input: Omit<Parameters<typeof trpc.request.ingestReceipt.mutate>[0], 'state'>, state) =>
+      trpc.request.ingestReceipt.mutate({ ...input, state }),
+  )
+}
+
 export function useResolveConflictMutation() {
   return useWorkspaceMutation(
     (input: Omit<Parameters<typeof trpc.request.resolveConflict.mutate>[0], 'state'>, state) =>

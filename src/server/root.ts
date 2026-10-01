@@ -7,6 +7,7 @@ import {
   closeRequest,
   createRequest,
   extendRequest,
+  ingestReceipt,
   recordExport,
   resolveConflict,
   saveRequest,
@@ -23,6 +24,7 @@ import {
   evidenceInputSchema,
   extendRequestInputSchema,
   identityInputSchema,
+  ingestReceiptInputSchema,
   recordExportInputSchema,
   resolveConflictInputSchema,
   saveRequestInputSchema,
@@ -112,6 +114,24 @@ export const appRouter = t.router({
       .mutation(({ input }) =>
         execute(() =>
           addConflict(input.state, input.requestId, input.conflict, input.operator),
+        ),
+      ),
+    ingestReceipt: publicProcedure
+      .input(ingestReceiptInputSchema)
+      .mutation(({ input }) =>
+        execute(() =>
+          ingestReceipt(
+            input.state,
+            input.requestId,
+            {
+              systemId: input.systemId,
+              requestVersion: input.requestVersion,
+              status: input.status,
+              resultSummary: input.resultSummary,
+              systemProcessedAt: input.systemProcessedAt,
+            },
+            input.operator,
+          ),
         ),
       ),
     resolveConflict: publicProcedure
